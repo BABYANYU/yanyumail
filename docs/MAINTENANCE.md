@@ -29,7 +29,7 @@ Cloudflare 控制台 Worker 的 Observability（仓库已开启）可查看请�
 
 | 参数 | 当前值 | 位置 |
 | --- | --- | --- |
-| 验证有效期 | 24 小时 | `WEEK` |
+| 验证有效期 | 24 小时 | `VERIFY` |
 | 路由保留 | 30 天 | `ROUTE` |
 | 验证尝试次数 | 3 次 / 5 分钟窗口 | `challenge` 中的 `rate(...)` 与 `tries` |
 | 访客发信限频 | 20 条 / 60 秒 | `visitor` 中的 `rate(...)` |
