@@ -70,6 +70,7 @@ async function owner(e,m){
 }
 async function visitor(e,m){
  const id=String(m.from.id);if(await get(e,'ban:'+id))return;
+ if((m.text||'').trim().toLowerCase()==='/id'){await say(e,id,`ID：${id}`);return;}
  if(!await rate(e,id,'inbound',20,60))return;
  const ok=await get(e,'trust:'+id)||await get(e,'verified:'+id);
  if(!ok){await challenge(e,id);return;}
@@ -89,7 +90,10 @@ async function visitor(e,m){
   }
   const sent=await tg(e,'copyMessage',{chat_id:e.ADMIN_ID,from_chat_id:id,message_id:m.message_id});
   await put(e,`route:${sent.message_id}`,route,ROUTE);
- }catch(err){await say(e,id,'消息未能送达，请稍后重试。');await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}
+ }catch(err){
+  if(!await get(e,'failnotice:'+id)){await put(e,'failnotice:'+id,true,3600);try{await say(e,id,'消息未能送达，请稍后重试。');}catch{}}
+  try{await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}catch{}
+ }
 }
 async function process(e,u){
  const m=u.message,q=u.callback_query;const uid=String(q?.from?.id||m?.from?.id||'');
@@ -108,5 +112,6 @@ export default {async fetch(r,e){
  if(r.headers.get('X-Telegram-Bot-Api-Secret-Token')!==e.WEBHOOK_SECRET)return new Response('Forbidden',{status:403});
  if(Number(r.headers.get('Content-Length'))>1048576)return new Response('Too large',{status:413});
  try{const raw=await r.text();if(raw.length>1048576)return new Response('Too large',{status:413});await process(e,JSON.parse(raw));return new Response('ok');}
- catch{ return new Response('Temporary error',{status:500}); }
+ catch(err){ console.error('handler error',String(err&&err.message||err)); }
+ return new Response('ok');
 }};

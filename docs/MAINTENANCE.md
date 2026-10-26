@@ -21,6 +21,7 @@ Cloudflare 控制台 Worker 的 Observability（仓库已开启）可查看请�
 | 管理员收不到消息 | `ADMIN_ID` 是否为数字 ID；管理员是否曾打开 Bot |
 | 提示找不到联系人 | 引用的消息超过 30 天，或引用的是身份卡以外的旧消息 |
 | 验证题不出现 | 该用户已被 `trust`、仍在 24 小时有效期内，或已被拉黑 |
+| 频繁重复同一提示 | 多为 Webhook 返回 500 触发 Telegram 重试；检查日志中的 handler error，并确认 ADMIN_ID 可达 |
 | 高频 500 | KV 写入配额或并发冲突；查看是否被刷 |
 
 ## 参数调整
@@ -46,6 +47,12 @@ Cloudflare 控制台 Worker 的 Observability（仓库已开启）可查看请�
 | Bot Token / Webhook Secret | Cloudflare Secret | 重要，无法回读，需自行保管 |
 
 KV 无长期业务数据，**不需要例行备份**。若确实要留档，可使用 `npx wrangler kv key list/get` 导出，注意其中含用户 ID。
+
+## 管理员会话可达性
+
+Bot 只能向**主动给 Bot 发过消息**的用户发送内容。`ADMIN_ID` 填错或管理员从未启动 Bot 时，`sendMessage` 会返回 `chat not found`，导致转交失败。排障时先确认这一点，再检查代码。
+
+任何用户发送 `/id` 可获知自己的数字 ID。
 
 ## 安全
 
