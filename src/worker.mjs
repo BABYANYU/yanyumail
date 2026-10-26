@@ -84,11 +84,16 @@ async function owner(e,m){
  const text=(m.text||'').trim();let cmd=text.split(/\s/)[0].toLowerCase().split('@')[0];
  const alias={'/b':'/block','/ub':'/unblock','/t':'/trust','/ut':'/untrust'};
  cmd=alias[cmd]||cmd;
+ // 防止管理员侧被自动回复程序来回触发（理论上限，正常人工操作远低于此值）
+ if(!await rate(e,e.ADMIN_ID,'owner',30,60))return;
  if(cmd==='/start'||cmd==='/help'){
   await say(e,e.ADMIN_ID,'YanyuMail 管理帮助\n\n【身份卡按钮】首次联系会发一张身份卡，直接点：\n拉黑 / 解封 / 信任 / 取消信任 / 信息\n\n【命令】引用联系人消息后发送：\n/block 或 /b 拉黑\n/unblock 或 /ub 解封\n/trust 或 /t 永久免验证\n/untrust 或 /ut 取消信任\n/info 或 /i 查看联系人\n\n【回复】引用消息后直接发文字或媒体即可\n未引用不会发送给任何人；路由保留 30 天；Bot 非端到端加密。');
   return;
  }
- if(!m.reply_to_message){await say(e,e.ADMIN_ID,'请引用对应联系人的消息后回复，避免误发。发送 /help 查看操作。');return;}
+ if(!m.reply_to_message){
+  if(await rate(e,e.ADMIN_ID,'hint',1,300))await say(e,e.ADMIN_ID,'请引用对应联系人的消息后回复，避免误发。发送 /help 查看操作。');
+  return;
+ }
  const route=await get(e,`route:${m.reply_to_message.message_id}`);
  if(!route){await say(e,e.ADMIN_ID,'未找到对应联系人（路由可能已超过30天）。请引用近期收到的联系人消息。');return;}
  const id=route.id;
