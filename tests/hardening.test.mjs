@@ -54,4 +54,12 @@ envErr.MAIL.get=async k=>{if(k.startsWith('ban:'))throw new Error('kv boom');ret
 const resErr=await post({update_id:uid++,message:{message_id:1,chat:{id:'2',type:'private'},from:{id:'2'},text:'x'}},envErr);
 ok(resErr.status===200,'异常仍返回200');
 
-console.log('PASS: 立即应答、并发去重、限频回执、回调必答、配置自检、取消信任、异常不外抛');
+// 8. 访客斜杠命令不转发
+data.clear();calls.length=0;
+data.set('verified:2',JSON.stringify(true));
+await post(msg('2','/help'));
+ok(!calls.some(c=>c.m==='copyMessage'),'访客 /help 不转发');
+await post(msg('2','正常留言'));
+ok(calls.some(c=>c.m==='copyMessage'),'普通消息仍转发');
+
+console.log('PASS: 立即应答、并发去重、限频回执、回调必答、配置自检、取消信任、异常不外抛、访客命令不转发');

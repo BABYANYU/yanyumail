@@ -116,6 +116,9 @@ async function visitor(e,m){
  if(await get(e,'ban:'+id))return;
  if((m.text||'').trim().toLowerCase()==='/id'){await say(e,id,`ID：${id}`);return;}
  if(!await rate(e,id,'inbound',20,60))return;
+ // 访客只允许 /start 与 /id；其余斜杠命令静默忽略，避免转进管理员窗口
+ const raw=(m.text||'').trim();
+ if(raw.startsWith('/')&&!/^\/start(@\w+)?$/i.test(raw))return;
  const ok=await get(e,'trust:'+id)||await get(e,'verified:'+id);
  if(!ok){await challenge(e,id);return;}
  if((m.text||'').trim().startsWith('/start')){await say(e,id,'验证有效，可直接发送消息。');return;}
