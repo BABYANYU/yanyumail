@@ -45,7 +45,7 @@ async function callback(e,q){
  if(await get(e,'ban:'+id))text='当前无法使用。';
  else if(quiz&&parts[0]==='q'&&parts[1]===quiz.nonce){
   if(quiz.tries>=3)text='尝试过多，请稍后重新 /start。';
-  else if(Number(parts[2])===quiz.answer){await put(e,'verified:'+id,true,WEEK);await e.MAIL.delete('quiz:'+id);text='验证通过';await say(e,id,'验证通过。7 天内可直接发送消息。');}
+  else if(Number(parts[2])===quiz.answer){await put(e,'verified:'+id,true,WEEK);await e.MAIL.delete('quiz:'+id);text='验证通过';await say(e,id,'验证通过，请简述来意。');}
   else{quiz.tries++;await put(e,'quiz:'+id,quiz,300);text=quiz.tries>=3?'尝试过多，请稍后重新 /start。':'答案不正确，请重试。';}
  }
  await tg(e,'answerCallbackQuery',{callback_query_id:q.id,text,show_alert:false});
