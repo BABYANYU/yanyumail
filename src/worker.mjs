@@ -1,5 +1,5 @@
 // YanyuMail — Copyright 2026 烟雨. Original implementation.
-const WEEK=604800, ROUTE=2592000;
+const VERIFY=86400, ROUTE=2592000;
 const locks=new Map();
 async function serial(key,fn){const old=locks.get(key)||Promise.resolve();const next=old.catch(()=>{}).then(fn);locks.set(key,next);try{return await next;}finally{if(locks.get(key)===next)locks.delete(key);}}
 async function tg(e,method,data){const r=await fetch(`https://api.telegram.org/bot${e.BOT_TOKEN}/${method}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(18000)});const d=await r.json();if(!d.ok)throw new Error((d.description||'Telegram拒绝请求').slice(0,180));return d.result;}
@@ -45,7 +45,7 @@ async function callback(e,q){
  if(await get(e,'ban:'+id))text='当前无法使用。';
  else if(quiz&&parts[0]==='q'&&parts[1]===quiz.nonce){
   if(quiz.tries>=3)text='验证次数过多，请稍后重试。';
-  else if(Number(parts[2])===quiz.answer){await put(e,'verified:'+id,true,WEEK);await e.MAIL.delete('quiz:'+id);text='验证通过';await say(e,id,'验证通过，请简述来意。');}
+  else if(Number(parts[2])===quiz.answer){await put(e,'verified:'+id,true,VERIFY);await e.MAIL.delete('quiz:'+id);text='验证通过';await say(e,id,'验证通过，请简述来意。');}
   else{quiz.tries++;await put(e,'quiz:'+id,quiz,300);text=quiz.tries>=3?'验证次数过多，请稍后重试。':'答案不正确，请重试。';}
  }
  await tg(e,'answerCallbackQuery',{callback_query_id:q.id,text,show_alert:false});
