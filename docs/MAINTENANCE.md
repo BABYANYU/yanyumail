@@ -11,6 +11,17 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 
 Cloudflare 控制台 Worker 的 Observability（仓库已开启）可查看请求量、错误率与日志。
 
+## 可靠性设计（勿回退）
+
+| 机制 | 原因 |
+| --- | --- |
+| 收到 Webhook 立即返回 200，处理放 `ctx.waitUntil` | 处理耗时超过 Telegram 60 秒等待会触发重投，造成重复转发 |
+| 处理前先 `claim(update_id)` 占位去重 | 重投时同一条消息只会被转发一次；同一实例内另有 `inflight` 集合防并发 |
+| 所有向 Telegram 的发送都包 try/catch | 任一目标不可达（如管理员未启动 Bot）不得让整个请求失败 |
+| 回调先算结果，`finally` 里必答 `answerCallbackQuery` | 否则按钮会一直转圈 |
+| `/health` 返回配置缺失项 | 部署错误可立刻发现，而不是表现为静默失败 |
+| 失败提示每用户每小时一次 | 避免同一条失败反复刷屏 |
+
 ## 常见故障
 
 | 现象 | 排查顺序 |
