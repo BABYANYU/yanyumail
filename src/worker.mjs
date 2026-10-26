@@ -12,7 +12,7 @@ async function challenge(e,id){
  const a=2+Math.floor(Math.random()*8),b=1+Math.floor(Math.random()*8),answer=a+b;
  const nonce=crypto.randomUUID().slice(0,12);const options=[answer,answer+1,answer-1].sort(()=>Math.random()-.5);
  await put(e,'quiz:'+id,{answer,nonce,tries:0},300);
- await say(e,id,`欢迎联系 YanyuMail。\n请先验证：${a}＋${b}＝？\n验证前的消息不会转交，请勿发送广告。`,{reply_markup:{inline_keyboard:[options.map(x=>({text:String(x),callback_data:`q:${nonce}:${x}`}))]}});
+ await say(e,id,`请完成验证后留言：${a}＋${b}＝？\n验证前的消息不会转交。`,{reply_markup:{inline_keyboard:[options.map(x=>({text:String(x),callback_data:`q:${nonce}:${x}`}))]}});
 }
 async function adminAct(e,act,id){
  if(act==='b'){await put(e,'ban:'+id,true);return `已拉黑 ${id}`;}
@@ -41,12 +41,12 @@ async function callback(e,q){
  }
  const id=String(q.from.id);if(q.message?.chat.type!=='private'||String(q.message.chat.id)!==id)return;
  const quiz=await get(e,'quiz:'+id);const parts=(q.data||'').split(':');
- let text='验证已过期，请发送 /start 重试。';
+ let text='验证已过期，请重新发送消息。';
  if(await get(e,'ban:'+id))text='当前无法使用。';
  else if(quiz&&parts[0]==='q'&&parts[1]===quiz.nonce){
-  if(quiz.tries>=3)text='尝试过多，请稍后重新 /start。';
+  if(quiz.tries>=3)text='验证次数过多，请稍后重试。';
   else if(Number(parts[2])===quiz.answer){await put(e,'verified:'+id,true,WEEK);await e.MAIL.delete('quiz:'+id);text='验证通过';await say(e,id,'验证通过，请简述来意。');}
-  else{quiz.tries++;await put(e,'quiz:'+id,quiz,300);text=quiz.tries>=3?'尝试过多，请稍后重新 /start。':'答案不正确，请重试。';}
+  else{quiz.tries++;await put(e,'quiz:'+id,quiz,300);text=quiz.tries>=3?'验证次数过多，请稍后重试。':'答案不正确，请重试。';}
  }
  await tg(e,'answerCallbackQuery',{callback_query_id:q.id,text,show_alert:false});
 }
@@ -73,7 +73,7 @@ async function visitor(e,m){
  if(!await rate(e,id,'inbound',20,60))return;
  const ok=await get(e,'trust:'+id)||await get(e,'verified:'+id);
  if(!ok){await challenge(e,id);return;}
- if((m.text||'').startsWith('/start')){await say(e,id,'你已通过验证，请直接发送消息。请勿刷屏或发送广告。');return;}
+ if((m.text||'').startsWith('/start')){await say(e,id,'验证有效，可直接发送消息。');return;}
  const name=[m.from.first_name,m.from.last_name].filter(Boolean).join(' ').replace(/[\r\n]/g,' ').slice(0,100);
  const route={id,name,username:m.from.username||''};
  try{
@@ -89,7 +89,7 @@ async function visitor(e,m){
   }
   const sent=await tg(e,'copyMessage',{chat_id:e.ADMIN_ID,from_chat_id:id,message_id:m.message_id});
   await put(e,`route:${sent.message_id}`,route,ROUTE);
- }catch(err){await say(e,id,'这条消息暂未成功转交，可能是消息类型受限或服务暂时异常，请稍后重试。');await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}
+ }catch(err){await say(e,id,'消息未能送达，请稍后重试。');await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}
 }
 async function process(e,u){
  const m=u.message,q=u.callback_query;const uid=String(q?.from?.id||m?.from?.id||'');
