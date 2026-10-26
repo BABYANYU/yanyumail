@@ -43,6 +43,7 @@ npx wrangler deploy
 | Bot 显示名称 | YanyuMail |
 | 公开介绍 | 请联系 Yanyu 前完成验证 |
 | 命令 | `/start` 开始联系并完成验证；`/help` 使用帮助 |
+| 身份卡 | 首次留言时推送，含拉黑／解封／信任／信息按钮 |
 | Webhook | 已注册，`max_connections=1`，`allowed_updates=[message, callback_query]` |
 | 待处理更新 | 0 |
 | KV 命名空间 | 绑定名 `MAIL`（ID 不记录在此，见 Cloudflare 控制台） |

@@ -14,7 +14,31 @@ async function challenge(e,id){
  await put(e,'quiz:'+id,{answer,nonce,tries:0},300);
  await say(e,id,`欢迎联系 YanyuMail。\n请先验证：${a}＋${b}＝？\n验证前的消息不会转交，请勿发送广告。`,{reply_markup:{inline_keyboard:[options.map(x=>({text:String(x),callback_data:`q:${nonce}:${x}`}))]}});
 }
+async function adminAct(e,act,id){
+ if(act==='b'){await put(e,'ban:'+id,true);return `已拉黑 ${id}`;}
+ if(act==='u'){const had=await get(e,'ban:'+id);if(!had)return `${id} 未处于拉黑状态`;await e.MAIL.delete('ban:'+id);return `已解封 ${id}`;}
+ if(act==='t'){await put(e,'trust:'+id,true);return `已信任 ${id}，永久免验证`;}
+ if(act==='x'){await e.MAIL.delete('trust:'+id);await e.MAIL.delete('verified:'+id);return `已取消信任 ${id}，下次需重新验证`;}
+ if(act==='i'){return 'info';}
+ return '未知操作';
+}
 async function callback(e,q){
+ const from=String(q.from.id);
+ if(from===String(e.ADMIN_ID)&&(q.data||'').startsWith('a:')){
+  const p=(q.data||'').split(':'),act=p[1],id=p.slice(2).join(':');
+  let text;
+  if(act==='i'){
+   const route=await get(e,`uid:${id}`);
+   const banned=await get(e,'ban:'+id),trusted=await get(e,'trust:'+id),verified=await get(e,'verified:'+id);
+   text='信息';
+   await say(e,e.ADMIN_ID,`联系人：${route?.name||'未知'}\n用户名：${route?.username?'@'+route.username:'未设置'}\n用户ID：${id}\n状态：${banned?'已拉黑':trusted?'已信任':verified?'已验证（7天）':'未验证'}`);
+  } else {
+   text=await adminAct(e,act,id);
+   if(text!=='info')await say(e,e.ADMIN_ID,text);
+  }
+  await tg(e,'answerCallbackQuery',{callback_query_id:q.id,text,show_alert:false});
+  return;
+ }
  const id=String(q.from.id);if(q.message?.chat.type!=='private'||String(q.message.chat.id)!==id)return;
  const quiz=await get(e,'quiz:'+id);const parts=(q.data||'').split(':');
  let text='验证已过期，请发送 /start 重试。';
@@ -27,8 +51,10 @@ async function callback(e,q){
  await tg(e,'answerCallbackQuery',{callback_query_id:q.id,text,show_alert:false});
 }
 async function owner(e,m){
- const text=(m.text||'').trim(),cmd=text.split(/\s/)[0].toLowerCase().split('@')[0];
- if(cmd==='/start'||cmd==='/help'){await say(e,e.ADMIN_ID,'YanyuMail 管理帮助\n\n引用联系人转发消息或身份卡，直接发送文字/媒体回复。\n引用后发送：\n/block 拉黑\n/unblock 解封\n/trust 永久免验证\n/untrust 取消信任与验证\n/info 查看联系人\n\n未引用不会自动发送给任何人。消息路由保留30天；Bot非端到端加密聊天。');return;}
+ const text=(m.text||'').trim();let cmd=text.split(/\s/)[0].toLowerCase().split('@')[0];
+ const alias={'/b':'/block','/ub':'/unblock','/t':'/trust','/ut':'/untrust','/i':'/info','/info':'/info'};
+ cmd=alias[cmd]||cmd;
+ if(cmd==='/start'||cmd==='/help'){await say(e,e.ADMIN_ID,'YanyuMail 管理帮助\n\n【身份卡按钮】首次联系会发一张身份卡，直接点：\n拉黑 / 解封 / 信任 / 信息\n\n【命令】引用联系人消息后发送：\n/block 或 /b 拉黑\n/unblock 或 /ub 解封\n/trust 或 /t 永久免验证\n/untrust 或 /ut 取消信任\n/info 或 /i 查看联系人\n\n【回复】引用消息后直接发文字或媒体即可\n未引用不会发送给任何人；路由保留 30 天；Bot 非端到端加密。');return;}
  if(!m.reply_to_message){await say(e,e.ADMIN_ID,'请引用对应联系人的消息后回复，避免误发。发送 /help 查看操作。');return;}
  const route=await get(e,`route:${m.reply_to_message.message_id}`);
  if(!route){await say(e,e.ADMIN_ID,'未找到对应联系人（路由可能已超过30天）。请引用近期收到的联系人消息。');return;}
@@ -52,7 +78,13 @@ async function visitor(e,m){
  const route={id,name,username:m.from.username||''};
  try{
   if(!await get(e,'intro:'+id)){
-   const card=await say(e,e.ADMIN_ID,`联系人：${name}\n用户名：${route.username?'@'+route.username:'未设置'}\n用户ID：${id}\n请引用该联系人的消息回复。`);
+   const card=await say(e,e.ADMIN_ID,`联系人：${name}\n用户名：${route.username?'@'+route.username:'未设置'}\n用户ID：${id}`,{reply_markup:{inline_keyboard:[[
+    {text:'拉黑',callback_data:`a:b:${id}`},
+    {text:'解封',callback_data:`a:u:${id}`},
+    {text:'信任',callback_data:`a:t:${id}`},
+    {text:'信息',callback_data:`a:i:${id}`}
+   ]]}});
+   await put(e,'uid:'+id,route,ROUTE);
    await put(e,`route:${card.message_id}`,route,ROUTE);await put(e,'intro:'+id,true,86400);
   }
   const sent=await tg(e,'copyMessage',{chat_id:e.ADMIN_ID,from_chat_id:id,message_id:m.message_id});
