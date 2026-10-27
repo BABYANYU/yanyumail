@@ -1,6 +1,6 @@
 // YanyuMail — Copyright 2026 烟雨. Original implementation.
 const VERIFY=86400, ROUTE=2592000, DEDUPE=86400;
-const locks=new Map(),inflight=new Set();
+const locks=new Map(),inflight=new Set(),activeUpdates=new Set();
 
 async function serial(key,fn){const old=locks.get(key)||Promise.resolve();const next=old.catch(()=>{}).then(fn);locks.set(key,next);try{return await next;}finally{if(locks.get(key)===next)locks.delete(key);}}
 async function tg(e,method,data){const r=await fetch(`https://api.telegram.org/bot${e.BOT_TOKEN}/${method}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(15000)});const d=await r.json();if(!d.ok)throw new Error((d.description||'Telegram拒绝请求').slice(0,180));return d.result;}
@@ -44,7 +44,10 @@ async function callback(e,q){
  const from=String(q.from.id);
  let note='已处理';
  try{
+  if(q.message?.chat?.type!=='private'||String(q.message.chat.id)!==from){note='无效操作';return;}
+  if(!await rate(e,from,'callback',15,60)){note='请稍后重试。';return;}
   if(from===String(e.ADMIN_ID)&&(q.data||'').startsWith('a:')){
+   if(!/^a:[butxi]:[1-9]\d{0,15}$/.test(q.data)){note='无效操作';return;}
    const p=(q.data||'').split(':'),act=p[1],id=p.slice(2).join(':');
    if(act==='i'){
     const route=await get(e,`uid:${id}`);
@@ -82,10 +85,11 @@ async function callback(e,q){
 
 async function owner(e,m){
  const text=(m.text||'').trim();let cmd=text.split(/\s/)[0].toLowerCase().split('@')[0];
- const alias={'/b':'/block','/ub':'/unblock','/t':'/trust','/ut':'/untrust'};
+ const alias={'/b':'/block','/ub':'/unblock','/t':'/trust','/ut':'/untrust','/i':'/info'};
  cmd=alias[cmd]||cmd;
  // 防止管理员侧被自动回复程序来回触发（理论上限，正常人工操作远低于此值）
  if(!await rate(e,e.ADMIN_ID,'owner',30,60))return;
+ if(cmd==='/id'){await say(e,e.ADMIN_ID,`ID：${e.ADMIN_ID}`);return;}
  if(cmd==='/start'||cmd==='/help'){
   await say(e,e.ADMIN_ID,'YanyuMail 管理帮助\n\n【身份卡按钮】首次联系会发一张身份卡，直接点：\n拉黑 / 解封 / 信任 / 取消信任 / 信息\n\n【命令】引用联系人消息后发送：\n/block 或 /b 拉黑\n/unblock 或 /ub 解封\n/trust 或 /t 永久免验证\n/untrust 或 /ut 取消信任\n/info 或 /i 查看联系人\n\n【回复】引用消息后直接发文字或媒体即可\n未引用不会发送给任何人；路由保留 30 天；Bot 非端到端加密。');
   return;
@@ -114,14 +118,14 @@ async function owner(e,m){
 async function visitor(e,m){
  const id=String(m.from.id);
  if(await get(e,'ban:'+id))return;
- if((m.text||'').trim().toLowerCase()==='/id'){await say(e,id,`ID：${id}`);return;}
  if(!await rate(e,id,'inbound',20,60))return;
- // 访客只允许 /start 与 /id；其余斜杠命令静默忽略，避免转进管理员窗口
  const raw=(m.text||'').trim();
- if(raw.startsWith('/')&&!/^\/start(@\w+)?$/i.test(raw))return;
+ const command=raw.split(/\s+/)[0].toLowerCase().split('@')[0];
+ if(command==='/id'){await say(e,id,`ID：${id}`);return;}
+ if(raw.startsWith('/')&&command!=='/start')return;
  const ok=await get(e,'trust:'+id)||await get(e,'verified:'+id);
  if(!ok){await challenge(e,id);return;}
- if((m.text||'').trim().startsWith('/start')){await say(e,id,'验证有效，可直接发送消息。');return;}
+ if(command==='/start'){await say(e,id,'验证有效，可直接发送消息。');return;}
  const name=[m.from.first_name,m.from.last_name].filter(Boolean).join(' ').replace(/[\r\n]/g,' ').slice(0,100)||`用户${id}`;
  const route={id,name,username:m.from.username||''};
  try{
@@ -137,20 +141,28 @@ async function visitor(e,m){
   const sent=await tg(e,'copyMessage',{chat_id:e.ADMIN_ID,from_chat_id:id,message_id:m.message_id});
   await put(e,`route:${sent.message_id}`,route,ROUTE);
  }catch(err){
-  if(!await get(e,'failnotice:'+id)){await put(e,'failnotice:'+id,true,3600);try{await say(e,id,'消息未能送达，请稍后重试。');}catch{}}
-  try{await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}catch{}
+  if(!await get(e,'failnotice:'+id)){
+   await put(e,'failnotice:'+id,true,3600);
+   try{await say(e,id,'消息未能送达，请稍后重试。');}catch{}
+   try{await say(e,e.ADMIN_ID,`联系人 ${id} 消息转交失败：${err.message}`);}catch{}
+  }
  }
 }
 
 async function process(e,u){
  const m=u.message,q=u.callback_query;
  const uid=String(q?.from?.id||m?.from?.id||'');
- if(!uid)return;
- if(!await claim(e,u.update_id))return;
- return serial(uid,async()=>{
-  if(q)await callback(e,q);
-  else if(m?.chat?.type==='private'&&!m.from?.is_bot){if(uid===String(e.ADMIN_ID))await owner(e,m);else await visitor(e,m);}
- });
+ if(!uid||!Number.isSafeInteger(u.update_id)||u.update_id<0)return;
+ const updateKey=String(u.update_id);
+ if(activeUpdates.has(updateKey))return;
+ activeUpdates.add(updateKey);
+ try{
+  if(!await claim(e,u.update_id))return;
+  return await serial(uid,async()=>{
+   if(q)await callback(e,q);
+   else if(m?.chat?.type==='private'&&!m.from?.is_bot){if(uid===String(e.ADMIN_ID))await owner(e,m);else await visitor(e,m);}
+  });
+ }finally{activeUpdates.delete(updateKey);}
 }
 
 export default {async fetch(r,e,ctx){
