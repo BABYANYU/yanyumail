@@ -2,9 +2,17 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "jsonc-parser";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = path.join(root, "node_modules/wrangler/bin/wrangler.js");
+
+export function readTemplate(text) {
+  const errors=[];
+  const config=parse(text,errors,{allowTrailingComma:true});
+  if(errors.length || !config || typeof config!=='object') throw new Error('Invalid Wrangler configuration');
+  return config;
+}
 
 export function prepareConfig(template, metadata) {
   if (template.name !== "yanyumail") throw new Error("Unexpected Worker name");
@@ -59,7 +67,7 @@ export async function main(checkOnly = false) {
       );
     }
   };
-  const template = JSON.parse(
+  const template = readTemplate(
     await readFile(path.join(root, "wrangler.jsonc"), "utf8"),
   );
   const deployments = JSON.parse(

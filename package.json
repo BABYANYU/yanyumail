@@ -11,6 +11,7 @@
     "deploy": "node scripts/deploy.mjs"
   },
   "devDependencies": {
+    "jsonc-parser": "3.3.1",
     "wrangler": "4.153.0"
   },
   "engines": {

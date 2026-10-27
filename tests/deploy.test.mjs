@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { prepareConfig } from "../scripts/deploy.mjs";
+import { prepareConfig, readTemplate } from "../scripts/deploy.mjs";
+
+test('deployment accepts valid JSONC comments and trailing commas but rejects malformed configuration',()=>{
+ assert.equal(readTemplate('{/* config */ "name":"yanyumail",}').name,'yanyumail');
+ assert.throws(()=>readTemplate('{"name":'));
+});
 
 const template = {
   name: "yanyumail",
