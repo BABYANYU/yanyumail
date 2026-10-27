@@ -1,56 +1,41 @@
 # YanyuMail
 
-私有联系信箱机器人：陌生人在 Telegram 私聊里完成验证后留言，管理员在 Bot 私聊窗口**引用消息**回复。
+私有联系信箱机器人：访客验证后留言，管理员在 Bot 私聊中引用消息回复。
 
-- Bot：[@YanyuMail_bot](https://t.me/YanyuMail_bot)
-- Worker：`yanyumail`（Cloudflare Workers + KV）
-- 正式入口：`https://your-worker.your-subdomain.workers.dev`，Webhook 路径 `/webhook`
-- 不占用 VPS 资源；不使用 Cloudflare 付费套餐。
-- 工作原理：访客消息 `copyMessage` 到管理员私聊，KV 保存“转发消息 ID → 联系人”，管理员引用回复后 `copyMessage` 回访客。
+**使用入口：[@YanyuMail_bot](https://t.me/YanyuMail_bot)**
 
-## 快速开始（本地）
+## 访客功能
 
-```sh
-node --version        # 建议 Node 18+
-node tests/worker.test.mjs
-npx wrangler login
-npx wrangler deploy
-```
+- 首次留言前完成算术验证；验证前的消息不会转交，也不会在验证后补发。
+- 验证通过后，24 小时内可直接留言。
+- 支持文字、图片、语音、视频、文件等 Telegram 允许复制的内容。
+- 每分钟最多约 20 条消息；被拉黑的联系人消息不转交。
+- `/start` 开始验证或查看当前验证状态；`/id` 查看自己的用户 ID。
 
-部署前必须在 Cloudflare 为 Worker 配置以下变量，**不要把真实值写进仓库**：
+## 管理员功能
 
-| 名称 | 类型 | 说明 |
-| --- | --- | --- |
-| `BOT_TOKEN` | Secret | BotFather 取得的机器人 Token |
-| `WEBHOOK_SECRET` | Secret | 随机长串，注册 Webhook 时同步提交给 Telegram |
-| `ADMIN_ID` | 变量 | 管理员的 Telegram 数字用户 ID |
-| `MAIL` | KV 命名空间 | 仓库已在 `wrangler.jsonc` 绑定现有命名空间 |
+- 在与 Bot 的私聊窗口接收访客消息，不需要群组或后台。
+- 引用对应访客消息或身份卡，发送文字、媒体即可回复；未引用时不会发送。
+- 身份卡提供拉黑、解封、信任、取消信任和信息按钮；24 小时内不重复发送。
+- 信任后永久免验证，仍保留基本限频；取消信任会同时清除验证状态。
+- 引用消息的联系路由保留 30 天。管理员命令只对管理员本人有效。
 
-## 文档
+| 命令              | 功能                     |
+| ----------------- | ------------------------ |
+| `/help`、`/start` | 管理帮助                 |
+| `/id`             | 查看管理员自己的用户 ID  |
+| `/block`、`/b`    | 拉黑引用消息对应的联系人 |
+| `/unblock`、`/ub` | 解封联系人               |
+| `/trust`、`/t`    | 永久信任联系人           |
+| `/untrust`、`/ut` | 取消信任并清除验证       |
+| `/info`、`/i`     | 查看联系人身份与状态     |
 
-| 内容 | 文件 |
-| --- | --- |
-| 安装与首次部署 | [docs/INSTALL.md](docs/INSTALL.md) |
-| 使用说明与命令 | [docs/USAGE.md](docs/USAGE.md) |
-| 维护、排查、备份 | [docs/MAINTENANCE.md](docs/MAINTENANCE.md) |
-| 偏好与约定 | [docs/PREFERENCES.md](docs/PREFERENCES.md) |
-| Codex 接手 | [docs/HANDOFF.md](docs/HANDOFF.md) |
+未知管理命令会被拦截，不会作为回复发送给访客。
 
-## 当前线上配置（2026-10-26）
+## 消息处理与隐私
 
-| 项目 | 值 |
-| --- | --- |
-| Bot 显示名称 | YanyuMail |
-| 公开介绍 | 请联系 Yanyu 前完成验证 |
-| 命令 | `/start` 开始联系并完成验证；`/help` 使用帮助 |
-| 身份卡 | 首次留言时推送，含拉黑／解封／信任／信息按钮 |
-| Webhook | 已注册，`max_connections=1`，`allowed_updates=[message, callback_query]` |
-| 待处理更新 | 0 |
-| KV 命名空间 | 绑定名 `MAIL`（ID 不记录在此，见 Cloudflare 控制台） |
-
-## 边界
-
-- KV 最终一致，且有每日读写配额；限频与去重是**尽力而为**，不能承诺严格幂等。
-- 只转发 Telegram 允许复制的内容；受保护内容、部分媒体类型可能失败，失败会提示管理员。
-- Bot 私聊不是 Telegram 端到端加密的“秘密聊天”，不要发送敏感凭据。
-- 人机验证只减少自动化垃圾消息，无法阻止真人广告。
+- 更新先进入持久队列，再按顺序处理；临时限流时自动延期重试。
+- 不保存普通留言正文或媒体文件；转交使用 Telegram 消息 ID。
+- 已确认成功的转交会记录结果，避免重试时重复发送。
+- 网络中断导致转交状态无法确认时，会提示核对，不盲目重复发送。
+- 访客不会看到管理员账号或其他联系人的消息。Bot 私聊属于普通 Telegram 云端聊天，不是端到端加密的秘密聊天。

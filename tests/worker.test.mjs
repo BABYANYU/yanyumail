@@ -1,24 +1,86 @@
-import worker from '../src/worker.mjs';
-const data=new Map(),calls=[];
-const e={ADMIN_ID:'1',BOT_TOKEN:'test',WEBHOOK_SECRET:'secret',MAIL:{get:async k=>data.has(k)?JSON.parse(data.get(k)):null,put:async(k,v)=>data.set(k,v),delete:async k=>data.delete(k)}};
-let message=100;
-globalThis.fetch=async(url,opt)=>{const method=url.split('/').pop(),d=JSON.parse(opt.body);calls.push({method,...d});return Response.json({ok:true,result:method==='answerCallbackQuery'?true:{message_id:++message}});};
-async function send(update,secret='secret'){return worker.fetch(new Request('https://test/webhook',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':secret},body:JSON.stringify(update)}),e);}
-const assert=(v,m)=>{if(!v)throw Error(m)};
-assert((await send({},'bad')).status===403,'webhook authentication');
-let u=1;const msg=(id,text,reply)=>({update_id:u++,message:{message_id:u,chat:{id,type:'private'},from:{id,first_name:'Tester'},text,...(reply?{reply_to_message:{message_id:reply}}:{})}});
-await send(msg(2,'hello'));assert(!calls.some(x=>x.chat_id==='1'),'unverified forwarded');
-const quiz=JSON.parse(data.get('quiz:2'));
-await send({update_id:u++,callback_query:{id:'q1',from:{id:2},message:{chat:{id:2,type:'private'}},data:`q:${quiz.nonce}:${quiz.answer}`}});
-assert(data.has('verified:2'),'quiz');
-await send(msg(2,'real-message'));
-const copied=calls.find(x=>x.method==='copyMessage'&&x.chat_id==='1');assert(copied,'inbound copy');
-const routeKey=[...data.keys()].filter(k=>k.startsWith('route:')).at(-1),reply=Number(routeKey.split(':')[1]);
-await send(msg(1,'answer',reply));assert(calls.some(x=>x.method==='copyMessage'&&x.chat_id==='2'),'reply routing');
-await send(msg(1,'/block',reply));assert(data.has('ban:2'),'block');
-const before=calls.length;await send(msg(2,'spam'));assert(calls.length===before,'blocked forwarded');
-await send(msg(1,'/unblock',reply));assert(!data.has('ban:2'),'unblock');
-await send(msg(1,'/trust',reply));assert(data.has('trust:2'),'trust');
-const duplicate=msg(2,'once');await send(duplicate);const n=calls.length;await send(duplicate);assert(calls.length===n,'dedupe');
-await send(msg(1,'/untrust',reply));assert(!data.has('trust:2')&&!data.has('verified:2'),'untrust');
-console.log('PASS: Webhook认证、未验证隔离、答题验证、双向引用路由、拉黑解封、信任撤销、重复消息拦截（模拟KV）');
+import test from "node:test";
+import assert from "node:assert/strict";
+import worker from "../src/worker.mjs";
+import { fixture } from "./helpers.mjs";
+
+test("webhook authenticates and refuses invalid configuration before touching the queue", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  assert.equal((await f.post(f.msg("2", "hi"), "wrong")).status, 403);
+  f.env.WEBHOOK_SECRET = "";
+  assert.equal((await f.post(f.msg("2", "hi"), "")).status, 503);
+  f.env.WEBHOOK_SECRET = "test-secret";
+  f.env.ADMIN_ID = "not-an-id";
+  assert.equal((await f.post(f.msg("2", "hi"))).status, 503);
+  assert.equal(f.pending(), 0);
+});
+
+test("receipt means durably queued, not processed in waitUntil", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const response = await f.post(f.msg("2", "hello"));
+  assert.equal(response.status, 200);
+  assert.equal(f.pending(), 1);
+  assert.equal(f.calls.length, 0);
+  f.restart();
+  await f.drain();
+  assert.ok(
+    f.calls.some((c) => c.method === "sendMessage" && c.chat_id === "2"),
+  );
+});
+
+test("queue storage failures return 503 so Telegram can retry", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  f.env.INBOX = {
+    getByName: () => ({
+      fetch: async () => {
+        throw Error("storage unavailable");
+      },
+    }),
+  };
+  assert.equal((await f.post(f.msg("2", "hello"))).status, 503);
+});
+
+test("unsupported updates are ignored before persistence and ordinary message text is not archived", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.post(
+    f.msg("2", "group", {}, { chat: { id: "-100", type: "group" } }),
+  );
+  await f.post(f.msg("2", "bot", null, { from: { id: "2", is_bot: true } }));
+  assert.equal(f.pending(), 0);
+  await f.post(f.msg("2", "private-message-content"));
+  const queued = f.sql.exec("SELECT payload FROM jobs").toArray()[0].payload;
+  assert.ok(!queued.includes("private-message-content"));
+  assert.ok(queued.includes("message_id"));
+});
+
+test("body limit is measured in bytes even without Content-Length", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const response = await worker.fetch(
+    new Request("https://test/webhook", {
+      method: "POST",
+      headers: { "X-Telegram-Bot-Api-Secret-Token": "test-secret" },
+      body: "中".repeat(400000),
+    }),
+    f.env,
+  );
+  assert.equal(response.status, 413);
+  assert.equal(f.pending(), 0);
+});
+
+test("health distinguishes valid configuration from missing bindings", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  assert.equal(
+    (await worker.fetch(new Request("https://test/health"), f.env)).status,
+    200,
+  );
+  delete f.env.INBOX;
+  assert.equal(
+    (await worker.fetch(new Request("https://test/health"), f.env)).status,
+    503,
+  );
+});

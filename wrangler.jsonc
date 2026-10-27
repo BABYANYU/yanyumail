@@ -1,12 +1,16 @@
 {
-  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "yanyumail",
   "main": "src/worker.mjs",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
+  "keep_vars": true,
   "observability": { "enabled": true },
-  // 部署前替换为你自己创建的 KV 命名空间 ID（wrangler kv namespace create MAIL）
   "kv_namespaces": [
-    { "binding": "MAIL", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
-  ]
+    { "binding": "MAIL", "id": "REPLACE_WITH_KV_NAMESPACE_ID" },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "INBOX", "class_name": "Mailbox" }],
+  },
+  "migrations": [{ "tag": "mailbox-v1", "new_sqlite_classes": ["Mailbox"] }],
 }

@@ -1,16 +1,80 @@
-import worker from '../src/worker.mjs';
-import assert from 'node:assert/strict';
-const store=new Map(),calls=[];let seq=10000,failCopy=false;
-const env={BOT_TOKEN:'test',ADMIN_ID:'1',WEBHOOK_SECRET:'s',MAIL:{get:async k=>store.has(k)?JSON.parse(store.get(k)):null,put:async(k,v)=>store.set(k,v),delete:async k=>store.delete(k)}};
-globalThis.fetch=async(url,opts)=>{const method=url.split('/').at(-1),data=JSON.parse(opts.body);calls.push({method,...data});return Response.json(failCopy&&method==='copyMessage'?{ok:false,description:'test failure'}:{ok:true,result:{message_id:++seq}});};
-async function post(payload){return worker.fetch(new Request('https://test/webhook',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'s'},body:JSON.stringify({update_id:++seq,...payload})}),env);}
-async function msg(id,text,reply){await post({message:{message_id:++seq,chat:{id,type:'private'},from:{id,first_name:'T'},text,...(reply?{reply_to_message:{message_id:reply}}:{})}});}
-function reset(){store.clear();calls.length=0;failCopy=false;}
-reset();store.set('route:42',JSON.stringify({id:'2',name:'T'}));await msg('1','/i',42);assert(!calls.some(c=>c.method==='copyMessage'));assert(calls.some(c=>c.text?.includes('用户ID：2')));
-reset();await msg('1','/id');assert(calls.some(c=>c.text==='ID：1'));
-reset();for(let i=0;i<25;i++)await msg('2','/id');assert.equal(calls.filter(c=>c.method==='sendMessage').length,20);
-reset();store.set('verified:2','true');await msg('2','/START payload');assert(!calls.some(c=>c.method==='copyMessage'));assert(calls.some(c=>c.text?.includes('验证有效')));
-reset();await post({callback_query:{id:'c',from:{id:'1'},message:{chat:{id:'-100',type:'supergroup'}},data:'a:b:2'}});assert(!store.has('ban:2'));
-reset();await post({callback_query:{id:'c',from:{id:'1'},message:{chat:{id:'1',type:'private'}},data:'a:b:garbage'}});assert(!store.has('ban:garbage'));
-reset();store.set('verified:2','true');store.set('intro:2','true');failCopy=true;await msg('2','one');await msg('2','two');assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.chat_id==='1').length,1);assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.chat_id==='2').length,1);
-console.log('PASS: /i不误发、管理员/id、访客/id限频、START参数解析、按钮来源校验、畸形参数拒绝、双方失败提示节流');
+import test from "node:test";
+import assert from "node:assert/strict";
+import { fixture } from "./helpers.mjs";
+
+test("unknown admin commands never become visitor replies; aliases still work", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.seed("route:42", { id: "2", name: "Example" });
+  await f.post(f.msg("1", "/unknown_private_command", 42));
+  await f.drain();
+  assert.ok(!f.calls.some((c) => c.method === "copyMessage"));
+  assert.ok(f.calls.some((c) => c.text?.includes("未知命令")));
+  for (const command of ["/i", "/info", "/help", "/id"]) {
+    await f.post(f.msg("1", command, 42));
+    await f.drain();
+  }
+  assert.ok(!f.calls.some((c) => c.method === "copyMessage"));
+  assert.ok(f.calls.some((c) => c.text === "ID：1"));
+  await f.post(f.msg("1", "/t", 42));
+  await f.drain();
+  assert.equal(await f.get("trust:2"), true);
+  await f.post(f.msg("1", "/ut", 42));
+  await f.drain();
+  assert.equal(await f.get("trust:2"), null);
+});
+
+test("visitor ID is rate limited, START parameters normalized, other commands ignored", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  for (let i = 0; i < 25; i++) await f.post(f.msg("2", "/id"));
+  await f.drain();
+  assert.equal(
+    f.calls.filter((c) => c.method === "sendMessage" && c.chat_id === "2")
+      .length,
+    20,
+  );
+  await f.seed("verified:3", true, 86400);
+  await f.post(f.msg("3", "/START payload"));
+  await f.post(f.msg("3", "/help"));
+  await f.drain();
+  assert.ok(
+    f.calls.some((c) => c.chat_id === "3" && c.text?.includes("验证有效")),
+  );
+  assert.ok(!f.calls.some((c) => c.method === "copyMessage"));
+});
+
+test("legacy trust and route expiry migrate without writes; deletions cannot resurrect old trust", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  f.legacy.set("trust:2", { value: true });
+  f.legacy.set("verified:3", {
+    value: true,
+    expiration: Math.floor(f.clock.value / 1000) + 30,
+  });
+  assert.equal(await f.get("trust:2"), true);
+  assert.equal(await f.get("verified:3"), true);
+  await f.box.state.delete("trust:2");
+  f.restart();
+  assert.equal(await f.get("trust:2"), null);
+  f.clock.value += 31000;
+  assert.equal(await f.get("verified:3"), null);
+  assert.equal(f.legacyWrites.length, 0);
+});
+
+test("source callback validation ignores groups and mismatched chat IDs before enqueue", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.post(
+    f.callback("1", "a:b:2", {
+      message: { chat: { id: "-100", type: "supergroup" } },
+    }),
+  );
+  await f.post(
+    f.callback("1", "a:b:2", {
+      message: { chat: { id: "3", type: "private" } },
+    }),
+  );
+  assert.equal(f.pending(), 0);
+  assert.equal(await f.get("ban:2"), null);
+});

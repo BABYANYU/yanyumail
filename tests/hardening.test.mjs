@@ -1,65 +1,149 @@
-import worker from '../src/worker.mjs';
-const data=new Map(),calls=[];
-const mkEnv=(admin='1')=>({ADMIN_ID:admin,BOT_TOKEN:'t',WEBHOOK_SECRET:'s',MAIL:{get:async k=>data.has(k)?JSON.parse(data.get(k)):null,put:async(k,v)=>{data.set(k,v);},delete:async k=>{data.delete(k);}}});
-let e=mkEnv(),failSend=false,mid=100;
-globalThis.fetch=async(url,opt)=>{const m=url.split('/').pop(),d=JSON.parse(opt.body);calls.push({m,...d});if(failSend&&m==='sendMessage')throw new Error('send failed');return Response.json({ok:true,result:m==='answerCallbackQuery'?true:{message_id:++mid}});};
-const post=(u,env=e,ctx)=>worker.fetch(new Request('https://t/webhook',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'s'},body:JSON.stringify(u)}),env,ctx);
-const ok=(v,msg)=>{if(!v)throw Error(msg)};
-let uid=1;const msg=(id,text)=>({update_id:uid++,message:{message_id:uid,chat:{id,type:'private'},from:{id,first_name:'T'},text}});
+import test from "node:test";
+import assert from "node:assert/strict";
+import { fixture } from "./helpers.mjs";
 
-// 1. waitUntil：立即返回，工作在后台完成
-let pending=[];
-const ctx={waitUntil:p=>pending.push(p)};
-const r=await post(msg('2','hi'),e,ctx);
-ok(r.status===200,'ack 200');
-ok(calls.length===0,'未阻塞返回');
-await Promise.all(pending);
-ok(calls.some(c=>c.m==='sendMessage'&&c.chat_id==='2'),'waitUntil 后台执行');
+test("retries do not consume the visitor rate budget again", async (t) => {
+  let copies = 0;
+  const f = fixture({
+    telegram: (method) =>
+      method === "copyMessage" && ++copies <= 21
+        ? { ok: false, error_code: 429, parameters: { retry_after: 1 } }
+        : null,
+  });
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  await f.post(f.msg("2", "retry the same update"));
+  await f.drain(30);
+  assert.equal(copies, 22);
+  assert.equal(f.pending(), 0);
+  const counters = f.sql
+    .exec("SELECT value FROM state WHERE key LIKE 'rate:inbound:2:%'")
+    .toArray();
+  assert.equal(counters.length, 1);
+  assert.equal(JSON.parse(counters[0].value), 1);
+});
 
-// 2. 并发重复投递同一 update 只处理一次
-data.clear();calls.length=0;
-const dup={update_id:999,message:{message_id:500,chat:{id:'2',type:'private'},from:{id:'2',first_name:'T'},text:'hello'}};
-await Promise.all([post(dup),post(dup)]);
-const quizSends=calls.filter(c=>c.m==='sendMessage'&&c.chat_id==='2').length;
-ok(quizSends===1,'重复投递只发一次验证题');
+test("uncertain verification replies do not block unrelated contacts or repeatedly resend", async (t) => {
+  const f = fixture({
+    telegram: (method, data) =>
+      method === "sendMessage" && data.chat_id === "2"
+        ? Error("connection lost")
+        : null,
+  });
+  t.after(f.close);
+  await f.post(f.msg("2", "first contact"));
+  await f.post(f.msg("3", "second contact"));
+  await f.drain();
+  assert.equal(f.calls.filter((c) => c.chat_id === "2").length, 1);
+  assert.ok(f.calls.some((c) => c.chat_id === "3" && c.reply_markup));
+  assert.equal(f.pending(), 0);
+});
 
-// 3. 验证限频后有回执，不再静默
-data.clear();calls.length=0;
-for(let i=0;i<5;i++)await post(msg('2','spam'));
-const notices=calls.filter(c=>c.m==='sendMessage'&&c.chat_id==='2');
-ok(notices.some(c=>/请稍后重试/.test(c.text)),'限频回执');
+test("rapid successive messages all forward with zero writes to the legacy KV", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  await Promise.all([
+    f.post(f.msg("2", "first")),
+    f.post(f.msg("2", "second")),
+    f.post(f.msg("2", "third")),
+  ]);
+  await f.drain();
+  assert.equal(f.calls.filter((c) => c.method === "copyMessage").length, 3);
+  assert.equal(f.legacyWrites.length, 0);
+});
 
-// 4. sendMessage 失败时仍应答按钮，不卡转圈
-data.clear();calls.length=0;failSend=true;
-const q={update_id:uid++,callback_query:{id:'cb',from:{id:'2'},message:{chat:{id:'2',type:'private'}},data:'q:x:1'}};
-await post(q);
-failSend=false;
-ok(calls.some(c=>c.m==='answerCallbackQuery'),'异常时仍应答回调');
+test("concurrent and later duplicate updates are processed once", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  const update = f.msg("2", "once");
+  await Promise.all([f.post(update), f.post(update)]);
+  await f.drain();
+  await f.post(update);
+  await f.drain();
+  assert.equal(f.calls.filter((c) => c.method === "copyMessage").length, 1);
+});
 
-// 5. 配置缺失时 /health 报错
-const bad=mkEnv('');delete bad.BOT_TOKEN;
-const h=await worker.fetch(new Request('https://t/health'),bad);
-ok(h.status===500&&/BOT_TOKEN/.test(await h.text()),'配置缺失可诊断');
+test("updates already acknowledged by the old deployment are not copied again during cutover", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  const update = f.msg("2", "old update");
+  f.legacy.set("update:" + update.update_id, {
+    value: 1,
+    expiration: Math.floor(f.clock.value / 1000) + 86400,
+  });
+  await f.post(update);
+  await f.drain();
+  assert.equal(f.calls.length, 0);
+});
 
-// 6. 取消信任按钮
-data.clear();calls.length=0;
-data.set('trust:2',JSON.stringify(true));data.set('verified:2',JSON.stringify(true));
-await post({update_id:uid++,callback_query:{id:'cb2',from:{id:'1'},message:{chat:{id:'1',type:'private'}},data:'a:x:2'}});
-ok(!data.has('trust:2')&&!data.has('verified:2'),'取消信任按钮生效');
+test("429 is durably deferred and succeeds after a restart", async (t) => {
+  let copies = 0;
+  const f = fixture({
+    telegram: (method) =>
+      method === "copyMessage" && ++copies === 1
+        ? { ok: false, error_code: 429, parameters: { retry_after: 2 } }
+        : null,
+  });
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  await f.post(f.msg("2", "retry"));
+  await f.box.alarm();
+  assert.equal(f.pending(), 1);
+  f.restart();
+  await f.drain();
+  assert.equal(copies, 2);
+  assert.equal(f.pending(), 0);
+});
 
-// 7. 处理异常不外抛
-data.clear();
-const envErr=mkEnv();const origGet=envErr.MAIL.get;
-envErr.MAIL.get=async k=>{if(k.startsWith('ban:'))throw new Error('kv boom');return origGet(k);};
-const resErr=await post({update_id:uid++,message:{message_id:1,chat:{id:'2',type:'private'},from:{id:'2'},text:'x'}},envErr);
-ok(resErr.status===200,'异常仍返回200');
+test("confirmed copies are not repeated when route persistence transiently fails", async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  const put = f.box.state.put;
+  let failed = false;
+  f.box.state.put = async (key, ...args) => {
+    if (key.startsWith("route:") && !failed) {
+      failed = true;
+      throw Object.assign(Error("temporary storage failure"), {
+        retryable: true,
+        after: 1,
+      });
+    }
+    return put(key, ...args);
+  };
+  await f.post(f.msg("2", "hello"));
+  await f.box.alarm();
+  assert.equal(f.pending(), 1);
+  await f.drain();
+  assert.equal(f.calls.filter((c) => c.method === "copyMessage").length, 1);
+  const copy = f.calls.find((c) => c.method === "copyMessage");
+  assert.equal((await f.get("route:" + copy.result.message_id)).id, "2");
+});
 
-// 8. 访客斜杠命令不转发
-data.clear();calls.length=0;
-data.set('verified:2',JSON.stringify(true));
-await post(msg('2','/help'));
-ok(!calls.some(c=>c.m==='copyMessage'),'访客 /help 不转发');
-await post(msg('2','正常留言'));
-ok(calls.some(c=>c.m==='copyMessage'),'普通消息仍转发');
-
-console.log('PASS: 立即应答、并发去重、限频回执、回调必答、配置自检、取消信任、异常不外抛、访客命令不转发');
+test("unknown network outcome is reported rather than blindly resending a copy", async (t) => {
+  const f = fixture({
+    telegram: (method) =>
+      method === "copyMessage" ? Error("socket disconnected") : null,
+  });
+  t.after(f.close);
+  await f.seed("verified:2", true, 86400);
+  await f.seed("intro:2", true, 86400);
+  const update = f.msg("2", "hello");
+  await f.post(update);
+  await f.drain();
+  await f.post(update);
+  await f.drain();
+  assert.equal(f.calls.filter((c) => c.method === "copyMessage").length, 1);
+  assert.ok(
+    f.calls.some((c) => c.chat_id === "1" && c.text?.includes("状态未确认")),
+  );
+});
